@@ -1,1 +1,29 @@
-
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf‑8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nach Stichwort suchen</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <div class="wrapper">
+      <h1>Transkription abgeschlossen</h1>
+      <p>Bitte gib ein Wort ein, das du finden möchtest.</p>
+      <form method="post" action="{{ url_for('search') }}">
+        <label for="keyword">Wort</label>
+        <input type="text" id="keyword" name="keyword" required>
+        <button type="submit">Suchen</button>
+      </form>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <ul class="messages">
+            {% for message in messages %}
+              <li>{{ message }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endwith %}
+    </div>
+  </body>
+</html>
