@@ -1,13 +1,17 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir streamlink==6.7.4
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN pip install -r requirements.txt
+COPY . /app
 
-COPY . .
+ENV PYTHONUNBUFFERED=1
+EXPOSE 10000
 
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180
+CMD sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"
