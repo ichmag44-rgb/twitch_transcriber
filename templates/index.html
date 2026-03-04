@@ -1,29 +1,157 @@
 <!doctype html>
 <html lang="de">
-  <head>
-    <meta charset="utf‑8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Twitch Transkription und Suche</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  </head>
-  <body>
-    <div class="wrapper">
-      <h1>Video transkribieren</h1>
-      <p>Füge die Adresse eines Videos ein und lasse das Gesagte erkennen.</p>
-      <form method="post" action="{{ url_for('process') }}">
-        <label for="video_url">Adresse des Videos</label>
-        <input type="url" id="video_url" name="video_url" placeholder="https://www.twitch.tv/videos/…" required>
-        <button type="submit">Transkribieren</button>
-      </form>
-      {% with messages = get_flashed_messages() %}
-        {% if messages %}
-          <ul class="messages">
-            {% for message in messages %}
-              <li>{{ message }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-      {% endwith %}
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Twitch Transcriber</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-zinc-100">
+  <div class="max-w-4xl mx-auto px-4 py-10">
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-3xl font-semibold">Twitch Transcriber</h1>
+        <p class="text-zinc-400 mt-1">VODs & Live Streams transkribieren, Wörter finden, Zeitstempel bekommen.</p>
+      </div>
+      <div class="text-xs text-zinc-500">Model: <span class="text-zinc-300">{{ env_whisper_model }}</span></div>
     </div>
-  </body>
+
+    <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5 shadow">
+      <div class="grid md:grid-cols-3 gap-4 items-end">
+        <div class="md:col-span-2">
+          <label class="block text-sm text-zinc-300 mb-2">Twitch URL</label>
+          <input id="url" class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500"
+                 placeholder="https://www.twitch.tv/videos/… oder https://www.twitch.tv/<channel>" />
+          <p class="text-xs text-zinc-500 mt-2">Live: Link zum Channel. VOD: /videos/…</p>
+        </div>
+        <div>
+          <label class="block text-sm text-zinc-300 mb-2">Modus</label>
+          <select id="mode" class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500">
+            <option value="vod">VOD</option>
+            <option value="live">Live</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-3 mt-5">
+        <button id="start" class="rounded-xl bg-violet-600 hover:bg-violet-500 px-4 py-2 font-medium">Start</button>
+        <button id="stop" class="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 font-medium hidden">Stop</button>
+        <span id="status" class="text-sm text-zinc-400 self-center">Bereit.</span>
+      </div>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6 mt-8">
+      <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
+        <h2 class="text-lg font-semibold mb-3">Live Transkript</h2>
+        <div id="transcript" class="h-80 overflow-auto text-sm leading-6 text-zinc-200 space-y-2 pr-2"></div>
+      </div>
+
+      <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
+        <h2 class="text-lg font-semibold mb-3">Wort finden</h2>
+        <div class="flex gap-2">
+          <input id="q" class="flex-1 rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500"
+                 placeholder="z.B. 'rotate' oder 'final'" />
+          <button id="searchBtn" class="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 font-medium">Suchen</button>
+        </div>
+        <p class="text-xs text-zinc-500 mt-2">Bei Live gibt’s Zeitstempel „seit Start“. VOD-Links funktionieren sofort.</p>
+        <div id="results" class="mt-4 h-64 overflow-auto text-sm space-y-3 pr-2"></div>
+      </div>
+    </div>
+
+    <div class="text-xs text-zinc-500 mt-8">
+      Hinweis: Nur Inhalte transkribieren, zu denen du berechtigt bist (TOS/Urheberrecht).
+    </div>
+  </div>
+
+<script>
+let jobId = null;
+let evtSrc = null;
+
+function setStatus(t){ document.getElementById('status').textContent = t; }
+
+function addLine(seg){
+  const el = document.createElement('div');
+  const time = seg.start != null ? new Date(seg.start*1000).toISOString().substr(11,8) : '';
+  el.className = "text-zinc-200";
+  el.innerHTML = `<span class="text-zinc-500 mr-2">[${time}]</span>${escapeHtml(seg.text)}`;
+  const box = document.getElementById('transcript');
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function escapeHtml(s){
+  return (s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+async function start(){
+  const url = document.getElementById('url').value.trim();
+  const mode = document.getElementById('mode').value;
+  if(!url){ setStatus("Bitte URL eingeben."); return; }
+  setStatus("Starte…");
+  document.getElementById('transcript').innerHTML = "";
+  document.getElementById('results').innerHTML = "";
+
+  const res = await fetch('/api/start', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url, mode})
+  });
+  const data = await res.json();
+  jobId = data.job_id;
+  document.getElementById('stop').classList.remove('hidden');
+
+  if(evtSrc) evtSrc.close();
+  evtSrc = new EventSource(`/api/events/${jobId}`);
+  evtSrc.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if(msg.type === 'status'){
+      setStatus(`Status: ${msg.status}`);
+    } else if(msg.type === 'segment'){
+      addLine(msg.segment);
+    } else if(msg.type === 'error'){
+      setStatus("Fehler: " + msg.message);
+    }
+  };
+}
+
+async function stop(){
+  if(!jobId) return;
+  await fetch(`/api/stop/${jobId}`, {method:'POST'});
+  setStatus("Stop angefordert…");
+}
+
+async function search(){
+  if(!jobId){ setStatus("Erst starten."); return; }
+  const q = document.getElementById('q').value.trim();
+  if(!q) return;
+  const res = await fetch(`/api/search/${jobId}?q=${encodeURIComponent(q)}`);
+  const data = await res.json();
+  const box = document.getElementById('results');
+  box.innerHTML = "";
+  if(!data.results.length){
+    box.innerHTML = `<div class="text-zinc-400">Keine Treffer.</div>`;
+    return;
+  }
+  for(const r of data.results){
+    const row = document.createElement('div');
+    row.className = "bg-zinc-950 border border-zinc-800 rounded-xl p-3";
+    const link = r.link ? `<a class="text-violet-400 hover:underline" target="_blank" href="${r.link}">Zum VOD</a>` : `<span class="text-zinc-500">Live (kein VOD-Link)</span>`;
+    row.innerHTML = `
+      <div class="flex items-center justify-between gap-3">
+        <div class="text-zinc-200 font-medium">${r.time}</div>
+        <div>${link}</div>
+      </div>
+      <div class="text-zinc-300 mt-2">${escapeHtml(r.text)}</div>
+    `;
+    box.appendChild(row);
+  }
+}
+
+document.getElementById('start').addEventListener('click', start);
+document.getElementById('stop').addEventListener('click', stop);
+document.getElementById('searchBtn').addEventListener('click', search);
+document.getElementById('q').addEventListener('keydown', (e)=>{ if(e.key==='Enter') search(); });
+</script>
+</body>
 </html>
