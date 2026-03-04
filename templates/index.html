@@ -1,282 +1,174 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Twitch Transcriber Master++</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Twitch Transcriber Master++</title>
+
+<style>
+body{
+    background:#0b0b0f;
+    color:white;
+    font-family:Arial,Helvetica,sans-serif;
+    margin:40px;
+}
+
+.container{
+    max-width:1000px;
+    margin:auto;
+}
+
+input,select{
+    width:100%;
+    padding:12px;
+    margin-top:10px;
+    background:#111;
+    border:1px solid #333;
+    color:white;
+    border-radius:8px;
+}
+
+button{
+    margin-top:15px;
+    padding:14px;
+    width:100%;
+    border:none;
+    border-radius:10px;
+    background:linear-gradient(90deg,#7b5cff,#9b6bff);
+    color:white;
+    font-weight:bold;
+    cursor:pointer;
+}
+
+.box{
+    margin-top:30px;
+    padding:20px;
+    background:#111;
+    border-radius:10px;
+}
+
+textarea{
+    width:100%;
+    height:250px;
+    background:#0f0f14;
+    border:1px solid #333;
+    color:white;
+    padding:10px;
+    border-radius:8px;
+}
+</style>
 </head>
-<body class="bg-zinc-950 text-zinc-100">
-  <div class="max-w-6xl mx-auto px-4 py-10">
-    <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-8">
-      <div>
-        <h1 class="text-3xl font-semibold">Twitch Transcriber <span class="text-violet-400">Master++</span></h1>
-        <p class="text-zinc-400 mt-1">Live Search + Alerts + Auto Moments + Game Detector + Analytics + Word Frequency</p>
-      </div>
-      <div class="text-xs text-zinc-500">
-        <div>Model: <span class="text-zinc-300">{{ env_whisper_model }}</span></div>
-        <div>Live chunk: <span class="text-zinc-300">{{ env_segment_seconds }}s</span></div>
-      </div>
-    </div>
 
-    <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5 shadow">
-      <div class="grid lg:grid-cols-12 gap-4 items-end">
-        <div class="lg:col-span-7">
-          <label class="block text-sm text-zinc-300 mb-2">Twitch URL</label>
-          <input id="url" class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500"
-                 placeholder="https://www.twitch.tv/videos/… oder https://www.twitch.tv/<channel>" />
-          <p class="text-xs text-zinc-500 mt-2">Live: Channel-Link. VOD: /videos/…</p>
-        </div>
-        <div class="lg:col-span-2">
-          <label class="block text-sm text-zinc-300 mb-2">Modus</label>
-          <select id="mode" class="w-full rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500">
-            <option value="vod">VOD</option>
-            <option value="live">Live</option>
-          </select>
-        </div>
-        <div class="lg:col-span-3 flex gap-2">
-          <button id="start" class="flex-1 rounded-xl bg-violet-600 hover:bg-violet-500 px-4 py-3 font-medium">Start</button>
-          <button id="stop" class="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-3 font-medium hidden">Stop</button>
-        </div>
-      </div>
+<body>
 
-      <div class="flex flex-wrap items-center gap-3 mt-4">
-        <span class="text-sm text-zinc-400">Status:</span>
-        <span id="status" class="text-sm text-zinc-300">Bereit.</span>
-        <span id="badge" class="text-xs px-2 py-1 rounded-full bg-zinc-800 text-zinc-300 hidden"></span>
-        <span id="quickStats" class="text-xs text-zinc-500"></span>
-      </div>
-    </div>
+<div class="container">
 
-    <div class="grid lg:grid-cols-12 gap-6 mt-8">
-      <div class="lg:col-span-7 bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold">Live Transkript</h2>
-          <button id="copyLast" class="text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5">Letzte Zeile kopieren</button>
-        </div>
-        <div id="transcript" class="h-[28rem] overflow-auto text-sm leading-6 text-zinc-200 space-y-2 pr-2"></div>
-      </div>
+<h1>Twitch Transcriber <span style="color:#8c6bff">Master++</span></h1>
+<p>Live Search + Alerts + Auto Moments + Game Detector + Analytics</p>
 
-      <div class="lg:col-span-5 space-y-6">
-        <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-          <h2 class="text-lg font-semibold mb-3">Instant Search</h2>
-          <div class="flex gap-2">
-            <input id="q" class="flex-1 rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500"
-                   placeholder="Wort eingeben…" />
-            <button id="searchBtn" class="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 font-medium">Suchen</button>
-          </div>
-          <div id="results" class="mt-4 max-h-60 overflow-auto text-sm space-y-3 pr-2"></div>
-        </div>
+<div class="box">
 
-        <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-          <h2 class="text-lg font-semibold mb-3">Alerts</h2>
-          <div class="flex gap-2">
-            <input id="watchInput" class="flex-1 rounded-xl bg-zinc-950 border border-zinc-800 px-4 py-3 outline-none focus:ring-2 focus:ring-violet-500"
-                   placeholder="z.B. rotate, clutch, aim" />
-            <button id="watchBtn" class="rounded-xl bg-violet-600 hover:bg-violet-500 px-4 py-2 font-medium">Setzen</button>
-          </div>
-          <div id="alerts" class="mt-4 max-h-44 overflow-auto text-sm space-y-2 pr-2"></div>
-        </div>
-      </div>
-    </div>
+<label>Twitch URL</label>
+<input id="url" placeholder="https://www.twitch.tv/videos/...">
 
-    <div class="grid lg:grid-cols-12 gap-6 mt-8">
-      <div class="lg:col-span-7 bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold">Word Frequency</h2>
-          <button id="refreshFreq" class="text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5">Refresh</button>
-        </div>
-        <canvas id="freqChart" height="140"></canvas>
-      </div>
+<label>Modus</label>
+<select id="mode">
+<option value="vod">VOD</option>
+<option value="live">LIVE</option>
+</select>
 
-      <div class="lg:col-span-5 space-y-6">
-        <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-lg font-semibold">AI Moment Detection</h2>
-            <button id="loadMoments" class="text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5">Laden</button>
-          </div>
-          <p class="text-xs text-zinc-500 mb-3">Findet automatisch “Hype”-Momente / Talk-Bursts / Game-Keywords.</p>
-          <div id="moments" class="space-y-2 text-sm max-h-56 overflow-auto pr-2"></div>
-        </div>
+<button onclick="startTranscription()">Start</button>
 
-        <div class="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-lg font-semibold">Streamer Analytics</h2>
-            <button id="refreshAnalytics" class="text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5">Refresh</button>
-          </div>
-          <div id="analytics" class="text-sm text-zinc-300 space-y-2"></div>
-        </div>
-      </div>
-    </div>
+</div>
 
-    <div class="text-xs text-zinc-500 mt-10">
-      Hinweis: Nur Inhalte transkribieren, zu denen du berechtigt bist.
-    </div>
-  </div>
+<div class="box">
+<h3>Live Transkript</h3>
+<textarea id="transcript" readonly></textarea>
+</div>
+
+<div class="box">
+<h3>Instant Search</h3>
+<input id="searchWord" placeholder="Wort eingeben...">
+<button onclick="searchWord()">Suchen</button>
+</div>
+
+<div class="box">
+<h3>Alerts</h3>
+<input id="alerts" placeholder="z.B. rotate, clutch, aim">
+<button onclick="setAlerts()">Setzen</button>
+</div>
+
+</div>
 
 <script>
-let jobId=null, evtSrc=null, lastLine="", freqChart=null;
 
-function esc(s){ return (s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-function setStatus(t){ document.getElementById('status').textContent = t; }
-function setBadge(t){ const b=document.getElementById('badge'); if(!t){b.classList.add('hidden');b.textContent="";return;} b.classList.remove('hidden'); b.textContent=t; }
-function setQuickStats(t){ document.getElementById('quickStats').textContent=t||""; }
+async function startTranscription(){
 
-function addTranscript(seg){
-  lastLine = seg.text || "";
-  const time = seg.start != null ? new Date(seg.start*1000).toISOString().substr(11,8) : '';
-  const el = document.createElement('div');
-  el.innerHTML = `<span class="text-zinc-500 mr-2">[${time}]</span>${esc(seg.text)}`;
-  const box = document.getElementById('transcript');
-  box.appendChild(el);
-  box.scrollTop = box.scrollHeight;
+    const url = document.getElementById("url").value
+    const mode = document.getElementById("mode").value
+
+    const res = await fetch("/start",{
+        method:"POST",
+        headers:{
+            "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+            url:url,
+            mode:mode
+        })
+    })
+
+    const data = await res.json()
+
+    console.log(data)
+
+    if(data.message){
+        alert(data.message)
+    }
+
 }
 
-function addAlert(a){
-  const el = document.createElement('div');
-  el.className = "bg-zinc-950 border border-zinc-800 rounded-xl p-3";
-  const link = a.link ? `<a class="text-violet-400 hover:underline" target="_blank" href="${a.link}">Zum VOD</a>` : `<span class="text-zinc-500">Live</span>`;
-  el.innerHTML = `
-    <div class="flex items-center justify-between">
-      <div class="font-medium text-zinc-200">🔔 ${esc(a.word)} @ ${esc(a.time)}</div>
-      <div>${link}</div>
-    </div>
-    <div class="text-zinc-300 mt-2">${esc(a.text)}</div>
-  `;
-  document.getElementById('alerts').prepend(el);
-  if(Notification && Notification.permission === "granted"){
-    new Notification(\`Alert: \${a.word}\`, { body: a.text.slice(0,120) });
-  }
+async function searchWord(){
+
+    const word = document.getElementById("searchWord").value
+
+    const res = await fetch("/search",{
+        method:"POST",
+        headers:{
+            "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+            word:word
+        })
+    })
+
+    const data = await res.json()
+
+    alert(JSON.stringify(data,null,2))
+
 }
 
-function addMoment(m){
-  const el = document.createElement('div');
-  el.className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between gap-3";
-  const link = m.link ? `<a class="text-violet-400 hover:underline" target="_blank" href="${m.link}">Öffnen</a>` : `<span class="text-zinc-500">Live</span>`;
-  el.innerHTML = `<div><div class="text-zinc-200 font-medium">✨ ${esc(m.label)} @ ${esc(m.time)}</div><div class="text-zinc-500 text-xs">${esc(m.reason||"")}</div></div><div>${link}</div>`;
-  document.getElementById('moments').prepend(el);
+async function setAlerts(){
+
+    const alerts = document.getElementById("alerts").value
+
+    const res = await fetch("/alerts",{
+        method:"POST",
+        headers:{
+            "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+            alerts:alerts
+        })
+    })
+
+    const data = await res.json()
+
+    alert("Alerts gesetzt")
+
 }
 
-async function start(){
-  const url=document.getElementById('url').value.trim();
-  const mode=document.getElementById('mode').value;
-  if(!url){ setStatus("Bitte URL eingeben."); return; }
-
-  setStatus("Starte…"); setBadge(""); setQuickStats("");
-  document.getElementById('transcript').innerHTML="";
-  document.getElementById('results').innerHTML="";
-  document.getElementById('alerts').innerHTML="";
-  document.getElementById('moments').innerHTML="";
-  document.getElementById('analytics').innerHTML="";
-
-  const res=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,mode})});
-  const data=await res.json();
-  jobId=data.job_id;
-  document.getElementById('stop').classList.remove('hidden');
-
-  if(evtSrc) evtSrc.close();
-  evtSrc=new EventSource(`/api/events/${jobId}`);
-  evtSrc.onmessage=(ev)=>{
-    const msg=JSON.parse(ev.data);
-    if(msg.type==='status'){ setStatus(`Status: ${msg.status}`); setBadge((msg.mode||"").toUpperCase()); }
-    else if(msg.type==='segment'){ addTranscript(msg.segment); }
-    else if(msg.type==='alert'){ addAlert(msg); }
-    else if(msg.type==='moment'){ addMoment(msg.moment); }
-    else if(msg.type==='error'){ setStatus("Fehler: "+msg.message); }
-  };
-
-  if(Notification && Notification.permission === "default"){
-    try{ await Notification.requestPermission(); }catch(e){}
-  }
-}
-
-async function stop(){
-  if(!jobId) return;
-  await fetch(`/api/stop/${jobId}`,{method:'POST'});
-  setStatus("Stop angefordert…");
-}
-
-async function search(){
-  if(!jobId){ setStatus("Erst starten."); return; }
-  const q=document.getElementById('q').value.trim(); if(!q) return;
-  const res=await fetch(`/api/search/${jobId}?q=${encodeURIComponent(q)}`);
-  const data=await res.json();
-  const box=document.getElementById('results'); box.innerHTML="";
-  if(!data.results.length){ box.innerHTML=`<div class="text-zinc-400">Keine Treffer.</div>`; return; }
-  for(const r of data.results){
-    const row=document.createElement('div');
-    row.className="bg-zinc-950 border border-zinc-800 rounded-xl p-3";
-    const link=r.link?`<a class="text-violet-400 hover:underline" target="_blank" href="${r.link}">Zum VOD</a>`:`<span class="text-zinc-500">Live</span>`;
-    row.innerHTML=`<div class="flex items-center justify-between gap-3"><div class="text-zinc-200 font-medium">${esc(r.time)}</div><div>${link}</div></div><div class="text-zinc-300 mt-2">${esc(r.text)}</div>`;
-    box.appendChild(row);
-  }
-}
-
-async function setWatch(){
-  if(!jobId){ setStatus("Erst starten."); return; }
-  const raw=document.getElementById('watchInput').value;
-  const words=raw.split(',').map(s=>s.trim()).filter(Boolean);
-  await fetch(`/api/watch/${jobId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({words})});
-  setStatus("Alerts gesetzt: "+(words.join(', ')||"—"));
-}
-
-async function refreshFreq(){
-  if(!jobId) return;
-  const res=await fetch(`/api/freq/${jobId}?top=20`);
-  const data=await res.json();
-  const labels=data.items.map(x=>x.word);
-  const values=data.items.map(x=>x.count);
-
-  const ctx=document.getElementById('freqChart');
-  if(freqChart) freqChart.destroy();
-  freqChart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Count',data:values}]},
-    options:{responsive:true,plugins:{legend:{display:false}},
-      scales:{x:{ticks:{color:'#a1a1aa'},grid:{color:'rgba(255,255,255,0.06)'}},
-              y:{ticks:{color:'#a1a1aa'},grid:{color:'rgba(255,255,255,0.06)'}}}}});
-}
-
-async function loadMoments(){
-  if(!jobId) return;
-  const res=await fetch(`/api/moments/${jobId}`); const data=await res.json();
-  const box=document.getElementById('moments'); box.innerHTML="";
-  for(const m of (data.moments||[]).reverse()) addMoment(m);
-}
-
-async function refreshAnalytics(){
-  if(!jobId) return;
-  const res=await fetch(`/api/analytics/${jobId}`); const a=await res.json();
-  const box=document.getElementById('analytics');
-  const games=(a.game_hits||[]).map(g=>`<div class="flex justify-between"><span>${esc(g.game)}</span><span class="text-zinc-400">${g.hits}</span></div>`).join('');
-  box.innerHTML = `
-    <div class="flex justify-between"><span>Segments</span><span class="text-zinc-400">${a.segments||0}</span></div>
-    <div class="flex justify-between"><span>Words</span><span class="text-zinc-400">${a.words||0}</span></div>
-    <div class="mt-2 text-zinc-200 font-medium">Game Signals</div>
-    <div class="space-y-1">${games || '<div class="text-zinc-500">Noch keine.</div>'}</div>
-  `;
-  setQuickStats(`Segments: ${a.segments||0} • Words: ${a.words||0}`);
-}
-
-async function copyLast(){
-  if(!lastLine) return;
-  try{ await navigator.clipboard.writeText(lastLine); setStatus("Letzte Zeile kopiert."); }
-  catch(e){ setStatus("Kopieren nicht möglich."); }
-}
-
-document.getElementById('start').addEventListener('click', start);
-document.getElementById('stop').addEventListener('click', stop);
-document.getElementById('searchBtn').addEventListener('click', search);
-document.getElementById('watchBtn').addEventListener('click', setWatch);
-document.getElementById('refreshFreq').addEventListener('click', refreshFreq);
-document.getElementById('loadMoments').addEventListener('click', loadMoments);
-document.getElementById('refreshAnalytics').addEventListener('click', refreshAnalytics);
-document.getElementById('copyLast').addEventListener('click', copyLast);
-document.getElementById('q').addEventListener('keydown',(e)=>{ if(e.key==='Enter') search(); });
-
-// auto refresh
-setInterval(()=>{ if(jobId) refreshFreq(); }, 20000);
-setInterval(()=>{ if(jobId) refreshAnalytics(); }, 15000);
 </script>
+
 </body>
 </html>
