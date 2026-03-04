@@ -1,285 +1,247 @@
-"""
-This module defines a simple Flask application that can download a Twitch video,
-transcribe the audio and then search for occurrences of a given word in the
-transcription.  The code relies on `yt_dlp` to fetch the media and
-`openai_whisper` to perform the speech‑to‑text conversion.
-
-The typical usage flow is:
-
-1.  A visitor lands on the home page and enters a video URL.  The server
-    downloads the audio track of that video and begins transcription.
-2.  Once the transcription has finished the visitor is presented with a
-    search form where they can enter any keyword.  The application will then
-    locate every segment of the transcript that contains the keyword and
-    return a list of timestamps along with direct links to the original
-    video starting at those positions.
-
-The project is intentionally lightweight and avoids external state.  Each
-transcript is stored as a JSON file under a temporary directory and is
-referenced via a unique identifier stored in the session.  You are free to
-extend this example to include user accounts, a database or asynchronous
-processing via a task queue such as Celery.
-"""
-
-import json
 import os
 import re
+import json
 import uuid
-from dataclasses import dataclass
-from typing import List, Tuple
+import time
+import queue
+import threading
+import subprocess
+from pathlib import Path
+from typing import Dict
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
-try:
-    from yt_dlp import YoutubeDL
-except ImportError:
-    # yt_dlp is not installed; leave a placeholder import so that the code
-    # remains syntactically valid.  The functions relying on yt_dlp will
-    # raise a RuntimeError if invoked without the dependency.
-    YoutubeDL = None
+import whisper
+from yt_dlp import YoutubeDL
 
-try:
-    import whisper
-except ImportError:
-    whisper = None  # type: ignore
+DATA = Path(__file__).resolve().parent.parent / "data"
+DATA.mkdir(exist_ok=True)
 
+SEGMENT_SECONDS = int(os.environ.get("SEGMENT_SECONDS", "10"))
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 
-app = Flask(__name__)
-# A secret key is required for session management.  In a production
-# deployment you should set this via an environment variable instead of
-# hard‑coding it.
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", str(uuid.uuid4()))
+app = FastAPI(title="Twitch Transcriber")
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent.parent / "static")), name="static")
 
-# Directory where downloaded media and transcripts will be stored.  This
-# location is relative to the application root so that it stays within the
-# project tree.  The directory will be created on demand.
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+jobs: Dict[str, dict] = {}
 
-
-@dataclass
-class TranscriptSegment:
-    """Represents a single segment of the transcript."""
-
-    start: float
-    end: float
-    text: str
-
-
-def ensure_data_dir() -> None:
-    """Create the data directory if it does not already exist."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def download_audio(url: str) -> str:
-    """Download the best available audio stream from a Twitch video.
-
-    Parameters
-    ----------
-    url:
-        The full link to the video on Twitch.  This may be a VOD or a clip.
-
-    Returns
-    -------
-    str
-        The file system path to the downloaded audio file.
-
-    Raises
-    ------
-    RuntimeError
-        If yt_dlp is not available or downloading fails.
-    """
-    if YoutubeDL is None:
-        raise RuntimeError(
-            "yt_dlp must be installed to download audio.  Install it with 'pip install yt‑dlp'."
-        )
-
-    ensure_data_dir()
-    # Use a unique identifier for the output file to avoid clashes.  yt_dlp
-    # replaces %(id)s with the internal ID of the video, but we still add
-    # a random prefix to guarantee uniqueness across multiple downloads.
-    uid = uuid.uuid4().hex
-    output_template = os.path.join(DATA_DIR, f"{uid}_%(id)s.%(ext)s")
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": output_template,
-        "quiet": True,
-        # Leave the file as is; we will let whisper convert it on the fly
-        "postprocessors": [],
-    }
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        file_path = ydl.prepare_filename(info)
-        return file_path
-
-
-def transcribe_audio(path: str) -> List[TranscriptSegment]:
-    """Transcribe the given audio file using OpenAI's Whisper model.
-
-    Parameters
-    ----------
-    path:
-        Absolute path to the audio or video file on the file system.
-
-    Returns
-    -------
-    list of TranscriptSegment
-        All segments produced by the model containing start time, end time and
-        transcript text.
-
-    Raises
-    ------
-    RuntimeError
-        If the whisper module is not available.
-    """
-    if whisper is None:
-        raise RuntimeError(
-            "openai‑whisper must be installed to perform transcription.  Install it with 'pip install openai‑whisper'."
-        )
-    # Load a small model to balance speed and accuracy.  Adjust the size
-    # according to your available compute resources.
-    model = whisper.load_model("base")
-    result = model.transcribe(path, verbose=False)
-    segments = []
-    for seg in result.get("segments", []):
-        segments.append(TranscriptSegment(start=float(seg["start"]), end=float(seg["end"]), text=seg["text"]))
-    return segments
-
-
-def save_transcript(segments: List[TranscriptSegment]) -> str:
-    """Write the transcript segments to a JSON file and return its identifier.
-
-    The JSON file will contain a list of dictionaries with `start`, `end` and
-    `text` fields.  The file is stored in the data directory using a UUID
-    prefix.  The returned value is the UUID which can later be used to
-    retrieve the file.
-    """
-    ensure_data_dir()
-    uid = uuid.uuid4().hex
-    path = os.path.join(DATA_DIR, f"{uid}.json")
-    with open(path, "w", encoding="utf‑8") as fh:
-        json.dump([seg.__dict__ for seg in segments], fh)
-    return uid
-
-
-def load_transcript(uid: str) -> List[TranscriptSegment]:
-    """Load a transcript from disk using its UUID.
-
-    Parameters
-    ----------
-    uid:
-        The unique identifier returned by `save_transcript`.
-
-    Returns
-    -------
-    list of TranscriptSegment
-        The transcript segments read from the JSON file.
-    """
-    path = os.path.join(DATA_DIR, f"{uid}.json")
-    with open(path, "r", encoding="utf‑8") as fh:
-        data = json.load(fh)
-    return [TranscriptSegment(**d) for d in data]
-
-
-def find_word_occurrences(segments: List[TranscriptSegment], word: str) -> List[Tuple[float, str]]:
-    """Locate all occurrences of a word within the transcript segments.
-
-    Parameters
-    ----------
-    segments:
-        A list of transcript segments as returned by `transcribe_audio` or
-        `load_transcript`.
-    word:
-        The keyword to search for.  The search is case‑insensitive and will
-        match whole words only.  For example, searching for "art" will not
-        match "party".
-
-    Returns
-    -------
-    list of (float, str)
-        A list of tuples containing the start time in seconds and the
-        corresponding line of text where the word was found.
-    """
-    occurrences = []
-    # Build a regular expression that matches the word as a standalone token
-    pattern = re.compile(rf"\b{re.escape(word)}\b", re.IGNORECASE)
-    for seg in segments:
-        if pattern.search(seg.text):
-            occurrences.append((seg.start, seg.text))
-    return occurrences
-
+def _safe_word_regex(q: str) -> re.Pattern:
+    return re.compile(rf"\b{re.escape(q)}\b", re.IGNORECASE)
 
 def seconds_to_hms(seconds: float) -> str:
-    """Convert seconds into a Twitch time string (e.g., 1h23m45s)."""
     total = int(seconds)
-    hours = total // 3600
-    minutes = (total % 3600) // 60
-    secs = total % 60
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0 or hours > 0:
-        parts.append(f"{minutes:02d}m")
-    parts.append(f"{secs:02d}s")
-    return "".join(parts)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h}h{m:02d}m{s:02d}s"
 
+def twitch_ts_link(original_url: str, seconds: float) -> str:
+    ts = seconds_to_hms(seconds)
+    joiner = "&" if "?" in original_url else "?"
+    return f"{original_url}{joiner}t={ts}"
 
-@app.route("/")
-def index():
-    """Render the home page with the URL submission form."""
-    return render_template("index.html")
+def download_vod_audio(url: str, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    uid = uuid.uuid4().hex
+    tmpl = str(out_dir / f"{uid}_%(id)s.%(ext)s")
+    ydl_opts = {"format":"bestaudio/best","outtmpl":tmpl,"quiet":True,"postprocessors":[]}
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return Path(ydl.prepare_filename(info))
 
+def transcribe_file(model, path: Path, offset_seconds: float = 0.0):
+    result = model.transcribe(str(path), verbose=False)
+    segs = []
+    for s in result.get("segments", []):
+        segs.append({
+            "start": float(s["start"]) + offset_seconds,
+            "end": float(s["end"]) + offset_seconds,
+            "text": s["text"].strip(),
+        })
+    return segs
 
-@app.route("/process", methods=["POST"])
-def process():
-    """Handle submission of a video URL and start transcription."""
-    url = request.form.get("video_url")
-    if not url:
-        flash("Bitte gib die Adresse des Videos an.")
-        return redirect(url_for("index"))
+def job_emit(job_id: str, item: dict):
+    jobs[job_id]["sse_q"].put(item)
+
+def run_vod_job(job_id: str, url: str):
+    job = jobs[job_id]
+    job["status"] = "downloading"
+    job_emit(job_id, {"type":"status","status":job["status"]})
     try:
-        audio_path = download_audio(url)
-        segments = transcribe_audio(audio_path)
-        uid = save_transcript(segments)
-    except Exception as exc:
-        flash(f"Beim Verarbeiten ist ein Fehler aufgetreten: {exc}")
-        return redirect(url_for("index"))
-    # Store both the UUID and the original video link so that we can build
-    # timestamped links later.
-    session["transcript_id"] = uid
-    session["video_link"] = url
-    return render_template("search.html")
+        audio_path = download_vod_audio(url, job["dir"] / "media")
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"Download failed: {e}"
+        job_emit(job_id, {"type":"error","message":job["error"]})
+        return
 
+    job["status"] = "transcribing"
+    job_emit(job_id, {"type":"status","status":job["status"]})
 
-@app.route("/search", methods=["POST"])
-def search():
-    """Perform a keyword search in a previously generated transcript."""
-    uid = session.get("transcript_id")
-    video_link = session.get("video_link")
-    if not uid or not video_link:
-        flash("Es ist kein Transkript vorhanden. Bitte zunächst ein Video verarbeiten.")
-        return redirect(url_for("index"))
-    word = request.form.get("keyword")
-    if not word:
-        flash("Bitte gib ein Suchwort ein.")
-        return redirect(url_for("search"))
-    segments = load_transcript(uid)
-    matches = find_word_occurrences(segments, word)
-    # Construct a list of result objects containing time strings and links
-    results = []
-    for start_time, text in matches:
-        hms = seconds_to_hms(start_time)
-        # Append the t= query parameter to the original link to jump to the time
-        if "?" in video_link:
-            link = f"{video_link}&t={hms}"
-        else:
-            link = f"{video_link}?t={hms}"
-        results.append({"time": hms, "text": text, "link": link})
-    return render_template("results.html", results=results, word=word)
+    model = whisper.load_model(WHISPER_MODEL)
+    try:
+        segs = transcribe_file(model, audio_path, 0.0)
+        job["segments"].extend(segs)
+        for s in segs:
+            job_emit(job_id, {"type":"segment","segment":s})
+        job["status"] = "done"
+        job_emit(job_id, {"type":"status","status":job["status"]})
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"Transcription failed: {e}"
+        job_emit(job_id, {"type":"error","message":job["error"]})
 
+def run_live_job(job_id: str, url: str):
+    job = jobs[job_id]
+    job["status"] = "capturing"
+    job_emit(job_id, {"type":"status","status":job["status"]})
 
-if __name__ == "__main__":
-    # When running directly via `python app.py` this will start the
-    # development server.  In production you should use a WSGI server
-    # such as gunicorn or uWSGI and configure environment variables for
-    # better performance and security.
-    app.run(debug=True)
+    chunks_dir = job["dir"] / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+
+    out_tmpl = str(chunks_dir / "chunk_%08d.wav")
+
+    streamlink_cmd = ["streamlink", url, "best", "-O"]
+    ffmpeg_cmd = [
+        "ffmpeg","-hide_banner","-loglevel","error",
+        "-i","pipe:0","-vn","-ac","1","-ar","16000",
+        "-f","segment","-segment_time", str(SEGMENT_SECONDS),
+        "-reset_timestamps","1", out_tmpl
+    ]
+
+    try:
+        p1 = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p2 = subprocess.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        job["procs"] = [p1, p2]
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"Live capture failed: {e}"
+        job_emit(job_id, {"type":"error","message":job["error"]})
+        return
+
+    model = whisper.load_model(WHISPER_MODEL)
+    last_idx = -1
+
+    try:
+        while not job.get("stop"):
+            wavs = sorted(chunks_dir.glob("chunk_*.wav"))
+            for w in wavs:
+                m = re.search(r"chunk_(\d+)\.wav$", w.name)
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                if idx <= last_idx:
+                    continue
+
+                # wait until stable
+                s1 = w.stat().st_size
+                time.sleep(0.2)
+                s2 = w.stat().st_size
+                if s1 != s2:
+                    continue
+
+                offset = idx * SEGMENT_SECONDS
+                segs = transcribe_file(model, w, offset)
+                job["segments"].extend(segs)
+                for s in segs:
+                    job_emit(job_id, {"type":"segment","segment":s})
+                last_idx = idx
+
+            p1, p2 = job.get("procs", [None, None])
+            if p1 and p1.poll() is not None:
+                job["status"] = "ended"
+                job_emit(job_id, {"type":"status","status":job["status"]})
+                break
+            if p2 and p2.poll() is not None:
+                job["status"] = "ended"
+                job_emit(job_id, {"type":"status","status":job["status"]})
+                break
+
+            time.sleep(0.5)
+
+        job["status"] = "stopped"
+        job_emit(job_id, {"type":"status","status":job["status"]})
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"Live transcription failed: {e}"
+        job_emit(job_id, {"type":"error","message":job["error"]})
+    finally:
+        for p in job.get("procs", []):
+            try: p.terminate()
+            except Exception: pass
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request, "env_whisper_model": WHISPER_MODEL})
+
+@app.post("/api/start")
+async def api_start(payload: dict):
+    url = (payload.get("url") or "").strip()
+    mode = (payload.get("mode") or "").strip().lower()
+    if not url:
+        raise HTTPException(400, "Missing url")
+    if mode not in ("vod","live"):
+        raise HTTPException(400, "mode must be 'vod' or 'live'")
+
+    job_id = uuid.uuid4().hex[:10]
+    job_dir = DATA / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs[job_id] = {"id":job_id,"url":url,"mode":mode,"status":"queued","error":None,"dir":job_dir,"segments":[],
+                    "sse_q": queue.Queue(),"stop":False,"procs":[]}
+
+    t = threading.Thread(target=run_live_job if mode=="live" else run_vod_job, args=(job_id, url), daemon=True)
+    jobs[job_id]["thread"] = t
+    t.start()
+
+    return {"job_id": job_id}
+
+@app.post("/api/stop/{job_id}")
+async def api_stop(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    job["stop"] = True
+    return {"ok": True}
+
+@app.get("/api/search/{job_id}")
+async def api_search(job_id: str, q: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    q = (q or "").strip()
+    if not q:
+        return {"results": []}
+    pat = _safe_word_regex(q)
+    out = []
+    for s in job["segments"]:
+        if pat.search(s["text"]):
+            out.append({
+                "start": s["start"],
+                "time": seconds_to_hms(s["start"]),
+                "text": s["text"],
+                "link": twitch_ts_link(job["url"], s["start"]) if job["mode"]=="vod" else None,
+            })
+    return {"results": out[:200]}
+
+@app.get("/api/events/{job_id}")
+async def api_events(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+
+    def gen():
+        q = job["sse_q"]
+        yield f"data: {json.dumps({'type':'status','status':job['status']})}\n\n"
+        while True:
+            try:
+                item = q.get(timeout=15)
+                yield f"data: {json.dumps(item)}\n\n"
+            except queue.Empty:
+                yield "data: {\"type\":\"keepalive\"}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
