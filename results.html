@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf‑8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Suchergebnisse</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <div class="wrapper">
+      <h1>Ergebnisse für «{{ word }}»</h1>
+      {% if results %}
+        <p>Folgende Stellen enthalten dein Wort.</p>
+        <ul class="results">
+          {% for r in results %}
+            <li>
+              <strong>{{ r.time }}</strong> : <a href="{{ r.link }}" target="_blank">Zum Video</a><br>
+              <em>{{ r.text }}</em>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>Es wurden keine passenden Stellen gefunden.</p>
+      {% endif %}
+    </div>
+  </body>
+</html>
